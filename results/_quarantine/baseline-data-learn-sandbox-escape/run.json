@@ -1,0 +1,64 @@
+{
+  "task": "data-learn",
+  "condition": "baseline",
+  "role": "learn",
+  "error": null,
+  "timestamp": "2026-10-06T04:05:25.808227+00:00",
+  "skills_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "seconds": 31.9,
+  "tokens": {
+    "input": 626193,
+    "output": 4365,
+    "total": 630558
+  },
+  "tool_calls": 27,
+  "subagent_calls": 0,
+  "skills_read": 0,
+  "skills_modified": false,
+  "final_message": "Both output files are written and the official checker reports a perfect score (8/8).\n\n## Summary\n\nI cleaned `workspace/sales.csv` and wrote `workspace/answer.json` plus `workspace/clean.csv`.\n\n**Cleaning steps:**\n1. **Duplicate rows** — dropped 7 exact duplicate rows (re-exports), keeping the first occurrence of each `(order_id, date, region, amount)` tuple.\n2. **One row per order** — kept the first row per `order_id` (101 data rows → 86 distinct orders with a known amount).\n3. **Region normalisation** — trimmed whitespace and fixed capitalisation to canonical `North`/`South`/`East`/`West`.\n4. **Dates** — parsed all three formats (`YYYY-MM-DD`, `DD/MM/YYYY`, ISO-8601 with offset) and converted everything to UTC.\n5. **Amounts** — treated `-999` as missing (8 distinct orders), excluded them from all revenue, and converted the rest to integer cents.\n\n**Results:** `north_q1_revenue` = 313024 cents (3130.24 USD) across 10 orders, `top_region` = North, `missing_amount_orders` = 8, `duplicate_rows_removed` = 7.\n\n**Acme conventions applied:** money as integer cents, a `meta` block (`source`, `rows_in`, `rows_used`), and `clean.csv` with header `order_id,timestamp_utc,region,amount_cents` (UTC timestamps as `YYYY-MM-DDTHH:MM:SSZ`, canonical regions, integer cents).\n\nFiles created: `workspace/answer.json`, `workspace/clean.csv` (plus a helper script `tmp/solve_data_learn.py`).",
+  "score": 1.0,
+  "passed": 8,
+  "total": 8,
+  "checks": [
+    {
+      "name": "north_q1_revenue",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "north_q1_orders",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "top_region",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "missing_amount_orders",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "duplicate_rows_removed",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "rule_money_in_cents",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "rule_meta_block",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "rule_clean_csv",
+      "passed": true,
+      "detail": ""
+    }
+  ]
+}

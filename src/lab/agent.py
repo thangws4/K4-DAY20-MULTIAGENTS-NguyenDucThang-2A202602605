@@ -3,13 +3,16 @@
 Pseudo-code: guides/pseudocode/01_agent.md
 Kiểm tra:    pytest tests/test_02_agent.py
 """
+import os
+import shlex
+import sys
 from pathlib import Path
 
-# TODO 1: import các thành phần cần dùng, ví dụ:
-#   from deepagents import create_deep_agent
-#   from deepagents.backends import LocalShellBackend
-#   from .model import make_model
-#   from .subagents import get_subagents
+from deepagents import create_deep_agent
+from deepagents.backends import LocalShellBackend
+
+from .model import make_model
+from .subagents import get_subagents
 
 # ---- CÓ SẴN, KHÔNG SỬA: system prompt dùng chung cho mọi sinh viên (để đường cơ sở so sánh được) ----
 PATHS_NOTE = (
@@ -38,6 +41,39 @@ SUBAGENTS_NOTE = (
 # --------------------------------------------------------------------------------------------------
 
 
+class IsolatedShellBackend(LocalShellBackend):
+    """Chạy lệnh shell của tác tử bằng một user không đặc quyền (dùng trong Dockerfile.isolated).
+
+    LocalShellBackend chỉ cô lập công cụ tệp (virtual_mode); shell vẫn chạy với quyền của tiến trình runner
+    nên đọc được kho mã nguồn (tasks/*/check.py, tác vụ đánh giá, .env). Với user riêng, kho nằm dưới một
+    thư mục chỉ root vào được, còn sandbox được mở quyền cho user đó.
+    """
+
+    def __init__(self, *args, user: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._user = user
+        self._share_sandbox()
+
+    def _share_sandbox(self):
+        # công cụ tệp chạy bằng root và tạo tệp với quyền 0o644, nên mở quyền ghi cho user của tác tử
+        for p in [self.cwd, *self.cwd.rglob("*")]:
+            p.chmod(p.stat().st_mode | (0o777 if p.is_dir() else 0o666))
+
+    def write(self, file_path, content):
+        result = super().write(file_path, content)
+        self._share_sandbox()
+        return result
+
+    def upload_files(self, files):
+        result = super().upload_files(files)
+        self._share_sandbox()
+        return result
+
+    def execute(self, command, *, timeout=None):
+        wrapped = f"setpriv --reuid={self._user} --regid={self._user} --init-groups -- /bin/sh -c {shlex.quote(command)}"
+        return super().execute(wrapped, timeout=timeout)
+
+
 def make_backend(sandbox: Path):
     """Tạo backend (môi trường thực thi) cho tác tử.
 
@@ -47,7 +83,23 @@ def make_backend(sandbox: Path):
       - Tác tử chạy được lệnh shell và gọi được `python` (cần đặt PATH).
       - KHÔNG chuyển biến môi trường của bạn vào shell của tác tử (khóa API không được lộ).
     """
-    raise NotImplementedError("TODO 2: cài đặt make_backend (xem guides/pseudocode/01_agent.md)")
+    env = {
+        # thư mục chứa python đang chạy (venv) đứng đầu, sau đó là các thư mục hệ thống
+        "PATH": os.pathsep.join([str(Path(sys.executable).parent), "/usr/local/bin", "/usr/bin", "/bin"]),
+        "HOME": str(sandbox),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    kwargs = dict(
+        root_dir=sandbox,
+        virtual_mode=True,
+        inherit_env=False,  # không kế thừa biến môi trường của tiến trình cha (khóa API)
+        env=env,
+        timeout=120,
+    )
+    user = os.getenv("LAB_AGENT_USER")       # chỉ đặt trong Dockerfile.isolated
+    if user:
+        return IsolatedShellBackend(user=user, **kwargs)
+    return LocalShellBackend(**kwargs)
 
 
 def build_agent(sandbox: Path, mode: str = "single", use_skills: bool = False, model=None):
@@ -64,4 +116,23 @@ def build_agent(sandbox: Path, mode: str = "single", use_skills: bool = False, m
     mode không hợp lệ -> ném ValueError.
     Trả về: đồ thị (graph) đã biên dịch, gọi bằng `.invoke({"messages": [...]})`.
     """
-    raise NotImplementedError("TODO 3: cài đặt build_agent (xem guides/pseudocode/01_agent.md)")
+    if mode not in ("single", "subagents"):
+        raise ValueError(f"unknown mode: {mode!r} (expected 'single' or 'subagents')")
+
+    kwargs = {}
+    prompt = BASE_PROMPT
+    if mode == "subagents":
+        # subagent không nhận BASE_PROMPT, nên mỗi subagent cần quy ước đường dẫn riêng
+        kwargs["subagents"] = [{**sub, "system_prompt": sub["system_prompt"] + " " + PATHS_NOTE}
+                               for sub in get_subagents()]
+        prompt += SUBAGENTS_NOTE
+    if use_skills:
+        kwargs["skills"] = ["/skills/"]  # đường dẫn ảo, tính từ root_dir của backend
+        prompt += SKILLS_NOTE
+
+    return create_deep_agent(
+        model=model if model is not None else make_model(),
+        system_prompt=prompt,
+        backend=make_backend(sandbox),
+        **kwargs,
+    )

@@ -4,10 +4,11 @@ Pseudo-code: guides/pseudocode/04_curator.md
 Kiểm tra:    pytest tests/test_04_curator.py
 Chạy thật:   python -m lab.curator
 """
+import json
 import re
 from pathlib import Path
 
-from .tasks import eval_markers   # có sẵn: định danh của tác vụ đánh giá, tính lúc chạy
+from .tasks import ROOT, eval_markers   # có sẵn: định danh của tác vụ đánh giá, tính lúc chạy
 
 # ---- CÓ SẴN, KHÔNG SỬA: kiểm tra và tách khối skill (phần dễ sai và liên quan bảo mật) ----------------
 SAFE_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -54,6 +55,55 @@ def parse_skill_blocks(reply: str) -> list[tuple[str, str]]:
     return [(name, text.strip()) for name, text in pattern.findall(str(reply))]
 # --------------------------------------------------------------------------------------------------
 
+TRACE_TAIL_CHARS = 6000
+
+PROMPT_TEMPLATE = """You write SKILLS for a coding and data-analysis agent.
+Below are the failed checks of some runs (the check name and the review bot's feedback) and the end of each run's trace.
+Find the general PROCESS mistakes and the organisation's conventions behind them (not task-specific answers), and write
+at most {max_skills} short skills that prevent those mistakes on NEW tasks of the same kinds.
+
+Rules:
+- Skills must be general: never mention a task id, a data/code file name or function of one task's workspace, a column
+  name, an answer or a computed number. Names of files, keys and headings that a CONVENTION itself requires are allowed,
+  because they are the rule.
+- When the feedback states a convention (lines starting with "RULE:"), write the convention down exactly and completely.
+- Each skill has a YAML frontmatter with `name` (lower case, hyphens) and `description` (one sentence starting with
+  "Use when ..." that names the broad kind of task), then at most 40 lines of imperative instructions; a numbered
+  checklist with a final self-check works well.
+- Output format, exactly:
+=== SKILL: <name> ===
+---
+name: <name>
+description: <when to use it>
+---
+<body>
+=== END ===
+
+{runs}"""
+
+
+def _load_learning_runs(results_dir: Path, source_condition: str) -> list[dict]:
+    runs = []
+    for run_file in sorted((Path(results_dir) / source_condition).glob("*/run.json")):
+        r = json.loads(run_file.read_text(encoding="utf-8"))
+        if r.get("role") != "learn":            # tuyệt đối không dùng dữ liệu tác vụ đánh giá
+            continue
+        trace_file = run_file.with_name("trace.md")
+        trace = trace_file.read_text(encoding="utf-8")[-TRACE_TAIL_CHARS:] if trace_file.exists() else ""
+        failed = [(c["name"], c.get("detail", "")) for c in r.get("checks", []) if not c.get("passed")]
+        runs.append({"task": r.get("task", run_file.parent.name), "failed": failed, "trace": trace})
+    return runs
+
+
+def _render_runs(runs: list[dict]) -> str:
+    parts = []
+    for run in runs:
+        if not run["failed"]:
+            continue
+        checks = "\n".join(f"- {name}: {detail}" for name, detail in run["failed"])
+        parts.append(f"## Run: {run['task']}\n### Failed checks\n{checks}\n### End of trace\n{run['trace']}")
+    return "\n\n".join(parts)
+
 
 def curate_skills(results_dir="results", source_condition="baseline", out_dir=None, model=None, max_skills: int = 3) -> list[Path]:
     """Đọc các lần chạy của TÁC VỤ HỌC (role == "learn") trong `source_condition`, nhờ LLM viết skill, ghi file.
@@ -68,7 +118,31 @@ def curate_skills(results_dir="results", source_condition="baseline", out_dir=No
     model mặc định: make_model() (lab.model).
     Trả về: danh sách đường dẫn SKILL.md đã ghi.
     """
-    raise NotImplementedError("TODO: cài đặt curate_skills (xem guides/pseudocode/04_curator.md)")
+    out_dir = Path(out_dir) if out_dir is not None else ROOT / "skills" / "auto"
+    runs = _load_learning_runs(Path(results_dir), source_condition)
+    if not any(run["failed"] for run in runs):
+        print(f"WARNING: không có check thất bại ở tác vụ học trong {Path(results_dir) / source_condition}; không gọi mô hình.")
+        return []
+
+    if model is None:
+        from .model import make_model
+        model = make_model()
+    prompt = PROMPT_TEMPLATE.format(max_skills=max_skills, runs=_render_runs(runs))
+    reply = model.invoke(prompt).content
+
+    written = []
+    for name, text in parse_skill_blocks(reply):
+        if len(written) >= max_skills:
+            break
+        problems = validate_skill(text, expected_name=name)
+        if problems:
+            print(f"skip skill {name!r}: {', '.join(problems)}")
+            continue
+        path = out_dir / name / "SKILL.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n", encoding="utf-8")
+        written.append(path)
+    return written
 
 
 if __name__ == "__main__":
